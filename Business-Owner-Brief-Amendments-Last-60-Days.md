@@ -8,6 +8,7 @@ Audience: Small business owners and operators
   - **Small business** grants/funding (e.g., SBA, grants, loans)
   - **Artificial intelligence** (AI)
   - **Data centers**
+  - Looks accurate, verified "business" via https://www.congress.gov/search?q=%7B%22congress%22:%5B%22119%22%5D,%22source%22:%22all%22,%22search%22:%22business%22%7D
 
 ### Scope of this check
 - **What**: Amendments (House and Senate) only
