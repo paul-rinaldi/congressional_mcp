@@ -9,7 +9,12 @@ Requires a valid CONGRESSIONAL_API_KEY to be set.
 import os
 import sys
 import json
+import configparser
 from pathlib import Path
+from typing import Optional
+from unittest.mock import patch
+
+import pytest
 
 # Add current directory to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -17,131 +22,157 @@ sys.path.insert(0, str(Path(__file__).parent))
 from congress_api_mcp import DependencyContainer, CongressApiServer
 
 
+def _lookup_api_key() -> Optional[str]:
+    """Try to locate an API key from the environment or secrets.ini."""
+
+    api_key = os.getenv("CONGRESSIONAL_API_KEY")
+    if api_key:
+        return api_key
+
+    config = configparser.ConfigParser()
+    secrets_path = Path(__file__).parent / "api_client" / "secrets.ini"
+    if secrets_path.exists():
+        config.read(secrets_path)
+        if config.has_section("cdg_api"):
+            secret_key = config.get("cdg_api", "api_auth_key", fallback=None)
+            if secret_key and secret_key != "PASTE_KEY_HERE":
+                return secret_key
+
+    return None
+
+
 def test_api_key_available():
     """Check if API key is available for testing."""
-    api_key = os.getenv('CONGRESSIONAL_API_KEY')
 
-    # Also check secrets.ini
-    if not api_key:
-        try:
-            import configparser
-            config = configparser.ConfigParser()
-            secrets_path = Path(__file__).parent / 'api_client' / 'secrets.ini'
-            if secrets_path.exists():
-                config.read(secrets_path)
-                if config.has_section('cdg_api'):
-                    api_key = config.get('cdg_api', 'api_auth_key', fallback=None)
-                    if api_key == 'PASTE_KEY_HERE':
-                        api_key = None
-        except:
-            pass
+    api_key = _lookup_api_key()
+    if api_key is None:
+        pytest.skip("CONGRESSIONAL_API_KEY not configured for live API tests")
 
-    return api_key is not None
+    assert api_key
 
 
 def test_server_initialization():
     """Test that the server can be initialized."""
-    print("Testing server initialization...")
 
-    try:
-        container = DependencyContainer()
-        server = CongressApiServer(container)
+    container = DependencyContainer()
+    server = CongressApiServer(container)
 
-        # Check that tools were created
-        tools = server.tools
-        print(f"✓ Server initialized with {len(tools)} tools")
+    tools = server.tools
+    assert tools, "expected server to expose at least one tool"
 
-        # List tool names
-        tool_names = [tool.name for tool in tools]
-        print(f"Available tools: {', '.join(tool_names)}")
-
-        return True
-
-    except Exception as e:
-        print(f"❌ Server initialization failed: {e}")
-        return False
+    tool_names = {tool.name for tool in tools}
+    assert "list_amendments" in tool_names
+    assert "list_bill" in tool_names
+    assert "list_house_communication" in tool_names
 
 
 def test_api_connectivity():
-    """Test actual API connectivity if key is available."""
-    if not test_api_key_available():
-        print("⚠️  Skipping API connectivity test - no valid API key found")
-        print("   To test with real API calls, set CONGRESSIONAL_API_KEY environment variable")
-        print("   or configure api_auth_key in api_client/secrets.ini")
-        return True
+    """Exercise a real API request when credentials are available."""
 
-    print("Testing API connectivity...")
+    api_key = _lookup_api_key()
+    if api_key is None:
+        pytest.skip("CONGRESSIONAL_API_KEY not configured for live API tests")
+
+    container = DependencyContainer()
+    service = container.get_amendment_service()
 
     try:
-        container = DependencyContainer()
-        service = container.get_amendment_service()
-
-        # Test a simple API call
-        print("Making test API call to list amendments...")
         response = service.list_amendments(limit=1)
+    except Exception as exc:  # pragma: no cover - network/credential guard
+        pytest.skip(f"Live API request failed: {exc}")
+    assert response.amendments, "expected at least one amendment from live API"
+    first_amendment = response.amendments[0]
+    assert first_amendment.number is not None
 
-        if response.amendments:
-            amendment = response.amendments[0]
-            print(f"✓ API call successful! Found amendment {amendment.number} from congress {amendment.congress}")
-            return True
-        else:
-            print("⚠️  API call returned empty results")
-            return True
-
-    except Exception as e:
-        print(f"❌ API connectivity test failed: {e}")
-        return False
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
 
 
+@pytest.mark.anyio("asyncio")
 async def test_tool_execution_async():
-    """Test tool execution with mock data (async version)."""
-    print("Testing tool execution...")
+    """Test tool execution with mock data across endpoints."""
 
-    try:
-        container = DependencyContainer()
-        server = CongressApiServer(container)
+    await _exercise_tool_flow()
 
-        # Test list_amendments tool
-        print("Testing list_amendments tool...")
-        result = await server.handle_tool_call("list_amendments", {"limit": 1})
-
-        # Should return a list with one TextContent
-        assert len(result) == 1
-        assert hasattr(result[0], 'text')
-
-        # Parse the JSON response
-        response_data = json.loads(result[0].text)
-        print("✓ list_amendments tool executed successfully")
-
-        # Test get_amendment tool (this will likely fail without real data, but should handle gracefully)
-        print("Testing get_amendment tool error handling...")
-        try:
-            result = await server.handle_tool_call("get_amendment", {
-                "congress": 117,
-                "amendment_type": "SAMDT",
-                "amendment_number": 999999  # Non-existent amendment
-            })
-
-            response_data = json.loads(result[0].text)
-            # Should contain error information
-            if 'error' in response_data:
-                print("✓ Error handling works correctly")
-            else:
-                print("✓ get_amendment tool executed (may have returned valid data)")
-
-        except Exception as e:
-            print(f"✓ get_amendment tool handled error gracefully: {type(e).__name__}")
-
-        return True
-
-    except Exception as e:
-        print(f"❌ Tool execution test failed: {e}")
-        return False
 
 def test_tool_execution():
-    """Test tool execution with mock data."""
+    """Sync wrapper that reuses the async tool execution flow."""
     import asyncio
-    return asyncio.run(test_tool_execution_async())
+
+    asyncio.run(_exercise_tool_flow())
+
+
+async def _exercise_tool_flow():
+    with patch.dict(os.environ, {"CONGRESSIONAL_API_KEY": "test_key"}):
+        with patch("http_client.HttpClient.get") as mock_get:
+            def _fake_get(endpoint, params=None):
+                if endpoint.startswith("amendment"):
+                    return {
+                        "amendments": [
+                            {
+                                "number": 1,
+                                "congress": 118,
+                                "type": "SAMDT",
+                                "description": "Test amendment",
+                            }
+                        ],
+                        "pagination": {"count": 1}
+                    }
+                if endpoint == "bill":
+                    return {"bills": [{"congress": 118, "type": "hr", "number": 2670}]}
+                if endpoint == "bill/118/hr/2670":
+                    return {"bill": {"title": "Test Bill"}}
+                if endpoint.startswith("bill/118/hr/2670/text"):
+                    return {"textVersions": []}
+                if endpoint == "house-requirement":
+                    return {"houseRequirements": [{"requirementNumber": 100}]}
+                if endpoint == "house-requirement/100":
+                    return {"houseRequirement": {"requirementNumber": 100}}
+                if endpoint == "house-requirement/100/matching-communications":
+                    return {"matchingCommunications": []}
+                return {"results": []}
+
+            mock_get.side_effect = _fake_get
+
+            container = DependencyContainer()
+            server = CongressApiServer(container)
+
+            result = await server.handle_tool_call("list_amendments", {"limit": 1})
+            assert len(result) == 1
+            amendment_payload = json.loads(result[0].text)
+            assert amendment_payload["amendments"][0]["number"] == 1
+
+            list_bill_result = await server.handle_tool_call("list_bill", {"params": {"limit": 1}})
+            bill_payload = json.loads(list_bill_result[0].text)
+            assert "bills" in bill_payload
+
+            subresource_result = await server.handle_tool_call(
+                "get_bill_subresource",
+                {
+                    "path_segments": [118, "hr", 2670],
+                    "subresource": "text"
+                }
+            )
+            text_payload = json.loads(subresource_result[0].text)
+            assert "textVersions" in text_payload
+
+            house_requirement_detail = await server.handle_tool_call(
+                "get_house_requirement",
+                {"path_segments": [100]}
+            )
+            requirement_payload = json.loads(house_requirement_detail[0].text)
+            assert requirement_payload["houseRequirement"]["requirementNumber"] == 100
+
+            requirement_subresource = await server.handle_tool_call(
+                "get_house_requirement_subresource",
+                {
+                    "path_segments": [100],
+                    "subresource": "matching-communications"
+                }
+            )
+            requirement_matches = json.loads(requirement_subresource[0].text)
+            assert "matchingCommunications" in requirement_matches
 
 
 def create_usage_example():

@@ -17,6 +17,7 @@ from config import Config
 from http_client import HttpClient
 from amendment_service import AmendmentService
 from congress_api_mcp import DependencyContainer, CongressApiServer
+from resource_service import GenericResourceService, RESOURCE_DEFINITIONS
 from models import Amendment, AmendmentsResponse
 
 
@@ -120,6 +121,38 @@ def test_dependency_container():
     assert service is not None
     print("✓ AmendmentService creation works")
 
+    resource_services = container.get_resource_services()
+    assert "bill" in resource_services
+    assert "house-communication" in resource_services
+    print(f"✓ Resource services created for {len(resource_services)} resources")
+
+
+def test_generic_resource_service():
+    """Test GenericResourceService path building."""
+
+    definition = RESOURCE_DEFINITIONS[0]  # bill resource
+    mock_client = Mock()
+    mock_client.get.return_value = {"data": "ok"}
+
+    service = GenericResourceService(mock_client, definition)
+
+    service.list_resources({"limit": 5})
+    mock_client.get.assert_any_call("bill", {"limit": 5})
+
+    service.get_resource([118, "hr", 2670], {"format": "json"})
+    mock_client.get.assert_any_call("bill/118/hr/2670", {"format": "json"})
+
+    service.get_subresource([118, "hr", 2670], "text/rs", None)
+    mock_client.get.assert_any_call("bill/118/hr/2670/text/rs", None)
+
+    requirement_definition = next(
+        definition for definition in RESOURCE_DEFINITIONS if definition.name == "house-requirement"
+    )
+    requirement_service = GenericResourceService(mock_client, requirement_definition)
+    requirement_service.get_subresource([100], "matching-communications", None)
+    mock_client.get.assert_any_call("house-requirement/100/matching-communications", None)
+    print("✓ GenericResourceService endpoint building works")
+
 
 def test_mcp_server_initialization():
     """Test MCP server initialization."""
@@ -134,6 +167,7 @@ def test_mcp_server_initialization():
     tool_names = [tool.name for tool in tools]
     assert 'list_amendments' in tool_names
     assert 'get_amendment' in tool_names
+    assert any(name.startswith('list_bill') for name in tool_names)
     print(f"✓ MCP server created {len(tools)} tools")
 
 
