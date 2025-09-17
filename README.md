@@ -283,35 +283,47 @@ The beauty of this approach is its seamless integration into existing workflows:
 
 ### Phase 1: Additional Congressional Endpoints
 
-The current implementation focuses on amendments, but Congress.gov provides extensive data:
+The MCP server now exposes every top-level route published at [api.congress.gov](https://api.congress.gov/). Each resource is wrapped in a dedicated tool trio that covers listing, direct retrieval, and nested subresources. Supported resources include:
 
-Bill Tracking
+- `bill`
+- `summaries`
+- `congress`
+- `committee`
+- `committee-report`
+- `committee-print`
+- `committee-meeting`
+- `hearing`
+- `member`
+- `nomination`
+- `treaty`
+- `crsreport`
+- `law`
+- `house-communication`
+- `senate-communication`
+- `house-requirement`
+- `house-vote`
+- `congressional-record`
+- `daily-congressional-record`
+- `bound-congressional-record`
 
-```python
+The tooling mirrors the amendment experience and keeps parameters consistent across endpoints. For example:
 
-# Future expansion
-
-"get_bill" - Retrieve complete bill information
-
-"get_bill_actions" - Track bill progress through committees
-
-"get_bill_cosponsors" - Analyze bill support networks
-
-"search_bills" - Natural language bill search
-
+```json
+{
+  "list_bill": {
+    "params": {"limit": 5}
+  },
+  "get_bill": {
+    "path_segments": [118, "hr", 2670]
+  },
+  "get_bill_subresource": {
+    "path_segments": [118, "hr", 2670],
+    "subresource": "text"
+  }
+}
 ```
 
-Member Intelligence
-
-```python
-
-"get_member" - Detailed legislator profiles
-
-"get_member_sponsored_bills" - Track legislator activity
-
-"get_member_votes" - Voting record analysis
-
-```
+Because the subresource tool accepts any additional path, the same pattern works for bill actions, committee attachments, House communication requirements, and other nested resources without creating hundreds of bespoke MCP tools.
 
 ### Phase 2: Advanced Analytics and AI Features
 
@@ -354,6 +366,17 @@ API Integrations
 - CRM integration for stakeholder tracking
 
 - ERP systems for compliance automation
+
+## Testing Examples Across Endpoints
+
+Run `pytest -k tool_execution` to validate amendment, bill, and communication requirement workflows with mocked responses. The integration tests exercise:
+
+1. **Amendment listing** – Ensures the amendment-specific service still parses structured data into Pydantic models.
+2. **Generic list endpoints** – Verifies the dynamic resource service can call `/v3/bill` (or any other route) with arbitrary query parameters.
+3. **Subresource traversal** – Demonstrates how to reach nested routes such as `/v3/bill/118/hr/2670/text` using the shared subresource tool.
+4. **Hyphenated resources** – Confirms endpoints like `/v3/house-requirement/100/matching-communications` resolve correctly through the dynamic tooling.
+
+Component tests cover configuration, HTTP client behaviour, amendment parsing, and the generic resource builder to keep SOLID boundaries intact.
 
 ## Getting Started Today
 
